@@ -1,3 +1,21 @@
+# Code Connect v1.5.3 (12 August 2026)
+
+## Fixed
+
+### React
+
+- Fixed rendering of nested arrow function callbacks
+
+## Features
+
+### General
+
+- Adds `figma connect preview <file> --unique`, which is similar to `--all` but hides duplicate outputs.
+
+### Template files
+
+- Added `id` to `InstanceHandle` to expose the instance's Figma node ID. It matches the Plugin API's `SceneNode.id`, including stable paths for nested instance sublayers.
+
 # Code Connect v1.5.2 (3 August 2026)
 
 ## Fixed
@@ -13,7 +31,6 @@
 > [!WARNING]
 > Framework-specific parsers will no longer receive updates or support from August 17th, 2026. Template files will be the only actively maintained way of using Code Connect. See our migration guide for more information and instructions on migrating parser-based Code Connect:
 > https://developers.figma.com/docs/code-connect/templates-migration-guide/
-
 
 ## Fixed
 

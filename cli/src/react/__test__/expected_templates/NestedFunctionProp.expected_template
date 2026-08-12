@@ -1,0 +1,8 @@
+const figma = require('figma')
+
+export default figma.tsx`<Button onClick={(e) => {
+        console.log('clicked', e);
+        return true;
+    }}>
+      Submit
+    </Button>`

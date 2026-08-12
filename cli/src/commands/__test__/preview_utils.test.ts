@@ -64,6 +64,7 @@ import {
   handlePreview,
   fetchComponentPropertyDefinitions,
   parsePropsArg,
+  validatePreviewOptions,
 } from '../preview_utils'
 import chalk from 'chalk'
 import type { CodeConnectJSON } from '../../connect/figma_connect'
@@ -724,6 +725,29 @@ describe('preview_utils', () => {
       expect(results[0].error).toContain('syntax errors')
     })
 
+    // `--unique` implies `--all`, so this guard must not name a flag the user
+    // never typed — including in the example it suggests.
+    it.each([
+      [
+        'names --unique when --unique is what was typed',
+        { all: true, unique: true },
+        '--unique requires a specific component, e.g. `figma connect preview Button.figma.ts --unique`',
+      ],
+      [
+        'names --all when --all is what was typed',
+        { all: true },
+        '--all requires a specific component, e.g. `figma connect preview Button.figma.ts --all`',
+      ],
+    ])('with no component file argument, %s', async (_label, opts, expected) => {
+      const { exitWithError } = jest.requireMock('../../common/logging')
+      getCodeConnectObjects.mockResolvedValue([])
+
+      const cmd = { dir: '/test/dir', output: 'json', ...opts } as any
+      await handlePreview([], cmd)
+
+      expect(exitWithError).toHaveBeenCalledWith(expected)
+    })
+
     it('should print only the server message and exit on 503 (killswitch)', async () => {
       const mockDoc: CodeConnectJSON = {
         figmaNode: 'https://figma.com/file/ABC123/test?node-id=1-2',
@@ -1058,6 +1082,53 @@ describe('preview_utils', () => {
         { name: 'textMsg', value: 'false', type: 'BOOLEAN' },
         { name: 'textMsg', value: 'Hello', type: 'TEXT' },
       ])
+    })
+  })
+
+  describe('validatePreviewOptions', () => {
+    const { exitWithError } = jest.requireMock('../../common/logging')
+    const cmd = (over: Record<string, unknown>) => over as unknown as BaseCommand
+
+    beforeEach(() => {
+      exitWithError.mockClear()
+    })
+
+    // `--unique` on its own can't reach here without `all` also being set —
+    // commander's .implies() guarantees it (see shared_options.test.ts).
+    it('accepts --unique together with --all', () => {
+      validatePreviewOptions(cmd({ unique: true, all: true }))
+      expect(exitWithError).not.toHaveBeenCalled()
+    })
+
+    it('leaves --all on its own alone', () => {
+      validatePreviewOptions(cmd({ all: true }))
+      expect(exitWithError).not.toHaveBeenCalled()
+    })
+
+    it('accepts --max-combinations with --unique, since --unique implies --all', () => {
+      validatePreviewOptions(cmd({ unique: true, all: true, maxCombinations: '10' }))
+      expect(exitWithError).not.toHaveBeenCalled()
+    })
+
+    it('offers both expansion flags when --max-combinations is used on its own', () => {
+      validatePreviewOptions(cmd({ maxCombinations: '10' }))
+      expect(exitWithError).toHaveBeenCalledWith(
+        '--max-combinations can only be used with --all or --unique',
+      )
+    })
+
+    it('names --unique, not the implied --all, when it conflicts with --props', () => {
+      validatePreviewOptions(cmd({ unique: true, all: true, props: ['Variant=Primary'] }))
+      expect(exitWithError).toHaveBeenCalledWith(
+        'Cannot combine --props and --unique (which implies --all); use one or the other',
+      )
+    })
+
+    it('names --all when --all itself conflicts with --props', () => {
+      validatePreviewOptions(cmd({ all: true, props: ['Variant=Primary'] }))
+      expect(exitWithError).toHaveBeenCalledWith(
+        'Cannot combine --props and --all; use one or the other',
+      )
     })
   })
 })

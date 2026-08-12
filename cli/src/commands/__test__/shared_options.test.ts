@@ -114,3 +114,43 @@ describe('addConnectCommandToProgram: shared option propagation', () => {
     })
   })
 })
+
+// `--unique` is deliberately wired with commander's .implies({ all: true }) so
+// that deduplication cannot be requested without the combinations it dedupes.
+// Everything downstream keys off `all`, so if the implication were dropped
+// `--unique` would silently render only the default combination.
+describe('preview --unique implies --all', () => {
+  it('sets all when only --unique is passed', () => {
+    const preview = exerciseSubcommand('preview')
+    expect(preview(['connect', 'preview', '--unique'])).toMatchObject({
+      unique: true,
+      all: true,
+    })
+  })
+
+  it('still parses the file argument when --unique precedes it', () => {
+    const program = new commander.Command()
+    addConnectCommandToProgram(program)
+    const sub = program.commands
+      .find((c) => c.name() === 'connect')!
+      .commands.find((c) => c.name() === 'preview')!
+    let files: string[] = []
+    let opts: Opts = {}
+    sub.action((...allArgs: unknown[]) => {
+      files = allArgs[0] as string[]
+      opts = allArgs[allArgs.length - 2] as Opts
+    })
+    program.parse(['node', 'cli', 'connect', 'preview', '--unique', 'Button.figma.tsx'])
+    // Unlike an optional-value flag (`--all [unique]`), a plain boolean cannot
+    // swallow the following positional.
+    expect(files).toEqual(['Button.figma.tsx'])
+    expect(opts).toMatchObject({ unique: true, all: true })
+  })
+
+  it('leaves all unset when --unique is absent', () => {
+    const preview = exerciseSubcommand('preview')
+    const opts = preview(['connect', 'preview'])
+    expect(opts.unique).toBeUndefined()
+    expect(opts.all).toBeUndefined()
+  })
+})

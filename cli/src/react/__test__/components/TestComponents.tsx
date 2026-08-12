@@ -7,7 +7,7 @@ interface ButtonProps {
   iconLead?: string
   children?: React.ReactNode
   icon?: string
-  onClick?: any
+  onClick?: (event: unknown) => void
 }
 
 export function Button({ width, variant, disabled, children }: ButtonProps) {

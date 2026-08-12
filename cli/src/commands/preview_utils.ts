@@ -17,6 +17,7 @@ import {
   type PropertyCombination,
   type AvailableProperty,
 } from '../connect/property_combinations'
+import { collapsePreviewResults } from './preview_collapse'
 
 type PreviewCommand = BaseCommand & { output?: string }
 
@@ -38,6 +39,14 @@ export interface PreviewResult {
   error?: string
   /** Present when this result is one property combination of an expanded (--all) render. */
   propertyCombinationLabel?: string
+  /**
+   * With `--unique`, the labels of all property combinations that produced this
+   * identical output (the full `--all` cartesian often collapses to far fewer
+   * distinct snippets).
+   */
+  propertyCombinationLabels?: string[]
+  /** With `--unique`, how many property combinations produced this identical output. */
+  propertyCombinationCount?: number
   /** `kind: "transport"` marks a server/network failure, in which case no property vocabulary is attached. */
   errorDetails?: {
     kind?: string
@@ -406,9 +415,13 @@ export function displayResults(results: PreviewResult[]): void {
   }
 
   for (const result of results) {
-    // When expanding property combinations, label the header with the specific combination.
+    const otherCombinations = (result.propertyCombinationCount ?? 1) - 1
+    const moreCombinations =
+      otherCombinations > 0
+        ? ` (+${otherCombinations} more property combination${otherCombinations > 1 ? 's' : ''})`
+        : ''
     const combinationSuffix = result.propertyCombinationLabel
-      ? ` ${gray(`— ${result.propertyCombinationLabel}`)}`
+      ? ` ${gray(`— ${result.propertyCombinationLabel}${moreCombinations}`)}`
       : ''
     if (result.success && result.snippet) {
       const componentInfo = result.component ? ` ${gray(`→ ${result.component}`)}` : ''
@@ -861,13 +874,25 @@ async function handleInspect({
   }
 }
 
-function validatePreviewOptions(cmd: PreviewCommand): void {
+/**
+ * `--unique` implies `--all`, so errors about combination expansion should name
+ * the flag the user actually typed rather than the one commander set on their
+ * behalf.
+ */
+function expandFlagName(cmd: PreviewCommand): '--all' | '--unique' {
+  return cmd.unique ? '--unique' : '--all'
+}
+
+export function validatePreviewOptions(cmd: PreviewCommand): void {
   if (cmd.all && cmd.props) {
-    exitWithError('Cannot combine --props and --all; use one or the other')
+    const implied = cmd.unique ? ' (which implies --all)' : ''
+    exitWithError(
+      `Cannot combine --props and ${expandFlagName(cmd)}${implied}; use one or the other`,
+    )
   }
 
   if (cmd.maxCombinations !== undefined && !cmd.all) {
-    exitWithError('--max-combinations can only be used with --all')
+    exitWithError('--max-combinations can only be used with --all or --unique')
   }
 }
 
@@ -1054,8 +1079,9 @@ export async function handlePreview(files: string[], cmd: PreviewCommand) {
   const configuredApiUrl = cmd.apiUrl || projectInfo.config.apiUrl
 
   if (cmd.all && (!files || files.length === 0)) {
+    const flag = expandFlagName(cmd)
     exitWithError(
-      '--all requires a specific component, e.g. `figma connect preview Button.figma.ts --all`',
+      `${flag} requires a specific component, e.g. \`figma connect preview Button.figma.ts ${flag}\``,
     )
   }
 
@@ -1107,9 +1133,17 @@ export async function handlePreview(files: string[], cmd: PreviewCommand) {
   }
 
   await validateRenderedSnippets(results)
-  await outputPreviewResults(results, outputFormat)
 
-  if (results.every((r) => !r.success)) {
+  const outputResults = cmd.unique ? collapsePreviewResults(results) : results
+  if (cmd.unique && outputResults.length !== results.length) {
+    logger.info(
+      `${outputResults.length} distinct of ${results.length} rendered property combinations`,
+    )
+  }
+
+  await outputPreviewResults(outputResults, outputFormat)
+
+  if (outputResults.every((r) => !r.success)) {
     process.exit(1)
   }
 }

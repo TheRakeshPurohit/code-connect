@@ -287,6 +287,23 @@ describe('Parser (JS templates)', () => {
     ])
   })
 
+  it('Renders the returned JSX when a prop is a function with a block body, instead of wrapping the nested handler in an Example function', async () => {
+    const result = await testParse('NestedFunctionProp.figma.tsx')
+
+    expect(result).toMatchObject([
+      {
+        figmaNode: 'ui/button',
+        component: 'Button',
+        template: getExpectedTemplate('NestedFunctionProp'),
+        templateData: {
+          nestable: true,
+          imports: ["import { Button } from './components/TestComponents'"],
+        },
+      },
+    ])
+    expect(result[0].template).not.toContain('function Example()')
+  })
+
   it('Parses prop mappings and forwards them to the template', async () => {
     const result = await testParse('PropMappings.figma.tsx')
 

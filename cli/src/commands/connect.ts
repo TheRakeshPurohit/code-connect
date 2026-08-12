@@ -73,6 +73,7 @@ export type BaseCommand = commander.Command & {
   maxCombinations?: string
   props?: string[]
   inspect?: boolean
+  unique?: boolean
 }
 
 type BatchMigrationMode = 'auto' | 'all' | 'none'
@@ -216,7 +217,7 @@ export function addConnectCommandToProgram(program: commander.Command) {
     )
     .option(
       '--max-combinations <number>',
-      'Maximum number of property combinations to render with --all. Defaults to 500 and cannot exceed 500.',
+      'Maximum number of property combinations to render with --all or --unique. Defaults to 500 and cannot exceed 500.',
     )
     .option(
       '--props <pairs...>',
@@ -225,6 +226,15 @@ export function addConnectCommandToProgram(program: commander.Command) {
     .option(
       '--inspect',
       "List the component's properties/variants (name, type, options, default) without rendering. Respects --output.",
+    )
+    .addOption(
+      // Implies --all, so `--unique` is meaningful on its own and there is no
+      // way to ask for deduplication without asking for the combinations it
+      // dedupes. Downstream code only ever reads `all`.
+      new commander.Option(
+        '--unique',
+        'Implies --all, but folds property combinations that render identical output into a single result (reported with the count of combinations it covers). Useful when boolean/variant axes do not change the rendered snippet.',
+      ).implies({ all: true }),
     )
     .action(withVersionWarnings(handlePreview))
 }

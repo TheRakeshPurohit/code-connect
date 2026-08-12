@@ -83,6 +83,7 @@ declare module 'figma' {
 
   export interface InstanceHandle {
     readonly type: 'INSTANCE'
+    readonly id: string
     readonly symbolId: string
     readonly name: string
     readonly children: (InstanceHandle | TextHandle | ErrorHandle)[]

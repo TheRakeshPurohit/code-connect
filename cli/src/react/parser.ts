@@ -50,14 +50,6 @@ export function findJSXElement(
   }
 }
 
-function findBlock(node: ts.Node): ts.Block | undefined {
-  if (ts.isBlock(node)) {
-    return node
-  } else {
-    return ts.forEachChild(node, findBlock)
-  }
-}
-
 /**
  * Walks up the AST from an assignment to find the import declaration
  */
@@ -469,7 +461,12 @@ export function parseRenderFunctionExpression(
   }
 
   const printer = ts.createPrinter()
-  const block = findBlock(exp)
+  // Only consider the render function's *own* body block, not any block nested
+  // deeper in the tree. Using a tree-walking search here would incorrectly pick
+  // up blocks belonging to nested functions (e.g. an event handler passed as a
+  // JSX prop like `onValidateFile={file => { ... }}`), causing us to render that
+  // handler's body instead of the returned JSX.
+  const block = exp.body && ts.isBlock(exp.body) ? exp.body : undefined
   let nestable = false
   let jsx = findJSXElement(exp)
 
