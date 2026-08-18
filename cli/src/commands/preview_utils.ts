@@ -179,70 +179,137 @@ type NodeSchemaResult =
   | { status: 'empty'; componentSetId?: string }
   | { status: 'error' }
 
-/**
- * Fetch one node's property definitions from the REST `files/:key/nodes` endpoint.
- */
-async function fetchNodeSchema(
-  baseApiUrl: string,
-  fileKey: string,
-  nodeId: string,
-  accessToken: string,
-): Promise<NodeSchemaResult> {
-  try {
-    const nodesUrl = `${baseApiUrl}/files/${fileKey}/nodes?ids=${nodeId}`
-    const resp = await request.get<{
-      nodes: Record<
-        string,
-        {
-          document?: {
-            componentPropertyDefinitions?: Record<string, FigmaRestApi.ComponentPropertyDefinition>
-          }
-          // Per-node component metadata; a variant member carries its parent set id here.
-          components?: Record<string, { componentSetId?: string }>
-        }
-      >
-    }>(nodesUrl, { headers: getHeaders(accessToken) })
-    if (resp.response.status !== 200) {
-      logger.debug(`files/nodes returned ${resp.response.status} for ${nodeId}`)
-      return { status: 'error' }
-    }
-    const node = resp.data.nodes?.[nodeId]
-    const componentSetId = node?.components?.[nodeId]?.componentSetId || undefined
-    const defs = node?.document?.componentPropertyDefinitions
-    if (defs && Object.keys(defs).length > 0) return { status: 'ok', defs, componentSetId }
-    logger.debug(`files/nodes returned no componentPropertyDefinitions for ${nodeId}`)
-    return { status: 'empty', componentSetId }
-  } catch (err) {
-    const detail = isFetchError(err) ? `status ${err.response?.status}` : String(err)
-    logger.debug(`files/nodes fetch failed for ${nodeId} (${detail})`)
-    return { status: 'error' }
+// Keep the comma-separated `ids` query comfortably below common URL limits while still
+// loading a few hundred components from the same design-system file together.
+const PROPERTY_SCHEMA_BATCH_SIZE = 200
+
+type FetchedNode = {
+  document?: {
+    componentPropertyDefinitions?: Record<string, FigmaRestApi.ComponentPropertyDefinition>
   }
+  // Per-node component metadata; a variant member carries its parent set id here.
+  components?: Record<string, { componentSetId?: string }>
 }
 
 /**
- * Fetch a component's property definitions from the REST `files/:key/nodes` endpoint.
+ * Fetch property definitions for several nodes in one REST `files/:key/nodes` request.
+ * That endpoint accepts comma-separated IDs, and loading the same file once per node is
+ * especially expensive for large design-system files.
  */
+async function fetchNodeSchemaBatch(
+  baseApiUrl: string,
+  fileKey: string,
+  nodeIds: string[],
+  accessToken: string,
+): Promise<Record<string, NodeSchemaResult>> {
+  try {
+    const nodesUrl = `${baseApiUrl}/files/${fileKey}/nodes?ids=${nodeIds.join(',')}`
+    const resp = await request.get<{
+      nodes: Record<string, FetchedNode>
+    }>(nodesUrl, { headers: getHeaders(accessToken) })
+    if (resp.response.status !== 200) {
+      logger.debug(`files/nodes returned ${resp.response.status} for ${nodeIds.length} node(s)`)
+      return Object.fromEntries(nodeIds.map((nodeId) => [nodeId, { status: 'error' }]))
+    }
+
+    return Object.fromEntries(
+      nodeIds.map((nodeId): [string, NodeSchemaResult] => {
+        const node = resp.data.nodes?.[nodeId]
+        const componentSetId = node?.components?.[nodeId]?.componentSetId || undefined
+        const defs = node?.document?.componentPropertyDefinitions
+        if (defs && Object.keys(defs).length > 0) {
+          return [nodeId, { status: 'ok', defs, componentSetId }]
+        }
+        logger.debug(`files/nodes returned no componentPropertyDefinitions for ${nodeId}`)
+        return [nodeId, { status: 'empty', componentSetId }]
+      }),
+    )
+  } catch (err) {
+    const detail = isFetchError(err) ? `status ${err.response?.status}` : String(err)
+    logger.debug(`files/nodes fetch failed for ${nodeIds.length} node(s) (${detail})`)
+    return Object.fromEntries(nodeIds.map((nodeId) => [nodeId, { status: 'error' }]))
+  }
+}
+
+async function fetchNodeSchemas(
+  baseApiUrl: string,
+  fileKey: string,
+  nodeIds: string[],
+  accessToken: string,
+): Promise<Record<string, NodeSchemaResult>> {
+  const results: Record<string, NodeSchemaResult> = {}
+  for (const batch of chunkArray([...new Set(nodeIds)], PROPERTY_SCHEMA_BATCH_SIZE)) {
+    Object.assign(results, await fetchNodeSchemaBatch(baseApiUrl, fileKey, batch, accessToken))
+  }
+  return results
+}
+
+/**
+ * Fetch components' property definitions in batches: first the requested nodes, then
+ * any parent component sets discovered in those responses.
+ */
+export async function fetchComponentPropertyDefinitionsBatch(
+  baseApiUrl: string,
+  fileKey: string,
+  nodeIds: string[],
+  accessToken: string,
+): Promise<Record<string, ComponentPropertyDefinitionsResult>> {
+  const uniqueNodeIds = [...new Set(nodeIds)]
+  const nodeSchemas = await fetchNodeSchemas(baseApiUrl, fileKey, uniqueNodeIds, accessToken)
+  const requestedNodeIds = new Set(uniqueNodeIds)
+  const componentSetIds = [
+    ...new Set(
+      Object.values(nodeSchemas)
+        .map((node) => (node.status === 'error' ? undefined : node.componentSetId))
+        .filter((id): id is string => !!id && !requestedNodeIds.has(id)),
+    ),
+  ]
+  const componentSetSchemas = await fetchNodeSchemas(
+    baseApiUrl,
+    fileKey,
+    componentSetIds,
+    accessToken,
+  )
+
+  return Object.fromEntries(
+    uniqueNodeIds.map((nodeId): [string, ComponentPropertyDefinitionsResult] => {
+      const node = nodeSchemas[nodeId] ?? { status: 'error' }
+      if (node.status === 'error') return [nodeId, { status: 'error' }]
+
+      // Variant child → resolve to the parent COMPONENT_SET (whose schema carries the
+      // variant axes). Fall back to the variant's own defs if the set can't be fetched.
+      if (node.componentSetId) {
+        const set = nodeSchemas[node.componentSetId] ?? componentSetSchemas[node.componentSetId]
+        if (set?.status === 'ok') return [nodeId, { status: 'ok', defs: set.defs }]
+        logger.debug(
+          `Component set ${node.componentSetId} for variant ${nodeId} had no usable schema ` +
+            `(${set?.status ?? 'error'}); using the variant's own definitions`,
+        )
+      }
+
+      return [
+        nodeId,
+        node.status === 'ok' ? { status: 'ok', defs: node.defs } : { status: 'empty' },
+      ]
+    }),
+  )
+}
+
+/** Fetch one component's property definitions. */
 export async function fetchComponentPropertyDefinitions(
   baseApiUrl: string,
   fileKey: string,
   nodeId: string,
   accessToken: string,
 ): Promise<ComponentPropertyDefinitionsResult> {
-  const node = await fetchNodeSchema(baseApiUrl, fileKey, nodeId, accessToken)
-  if (node.status === 'error') return { status: 'error' }
+  const results = await fetchComponentPropertyDefinitionsBatch(
+    baseApiUrl,
+    fileKey,
+    [nodeId],
+    accessToken,
+  )
 
-  // Variant child → resolve to the parent COMPONENT_SET (whose schema carries the
-  // variant axes). Fall back to the variant's own defs if the set can't be fetched.
-  if (node.componentSetId) {
-    const set = await fetchNodeSchema(baseApiUrl, fileKey, node.componentSetId, accessToken)
-    if (set.status === 'ok') return { status: 'ok', defs: set.defs }
-    logger.debug(
-      `Component set ${node.componentSetId} for variant ${nodeId} had no usable schema ` +
-        `(${set.status}); using the variant's own definitions`,
-    )
-  }
-
-  return node.status === 'ok' ? { status: 'ok', defs: node.defs } : { status: 'empty' }
+  return results[nodeId] ?? { status: 'error' }
 }
 
 /** Case-insensitive lookup of a `ComponentPropertyType` from a `--props` prefix token. */
@@ -920,8 +987,15 @@ async function buildPropertyPreviewInputs({
 
   const propertyCombinationsByNodeId: Record<string, PropertyCombination[]> = {}
   const availablePropsByNodeId: Record<string, AvailableProperty[]> = {}
-  for (const nodeId of [...new Set(nodes.map((n) => n.nodeId))]) {
-    const result = await fetchComponentPropertyDefinitions(baseApiUrl, fileKey, nodeId, accessToken)
+  const uniqueNodeIds = [...new Set(nodes.map((n) => n.nodeId))]
+  const definitionsByNodeId = await fetchComponentPropertyDefinitionsBatch(
+    baseApiUrl,
+    fileKey,
+    uniqueNodeIds,
+    accessToken,
+  )
+  for (const nodeId of uniqueNodeIds) {
+    const result = definitionsByNodeId[nodeId] ?? { status: 'error' }
     if (result.status === 'error') {
       logger.warn(
         `Couldn't fetch property definitions for node ${nodeId} (ensure your token has the ` +
@@ -1085,7 +1159,7 @@ export async function handlePreview(files: string[], cmd: PreviewCommand) {
     )
   }
 
-  const allCodeConnectObjects = await getCodeConnectObjects(cmd, projectInfo, true)
+  const allCodeConnectObjects = await getCodeConnectObjects(cmd, projectInfo, { silent: true })
 
   const nodesToCheck =
     files && files.length > 0

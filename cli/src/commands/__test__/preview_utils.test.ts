@@ -63,6 +63,7 @@ import {
   displayResults,
   handlePreview,
   fetchComponentPropertyDefinitions,
+  fetchComponentPropertyDefinitionsBatch,
   parsePropsArg,
   validatePreviewOptions,
 } from '../preview_utils'
@@ -1019,6 +1020,42 @@ describe('preview_utils', () => {
       const result = await fetchComponentPropertyDefinitions('https://api', 'file1', '1:2', 'tok')
 
       expect(result).toEqual({ status: 'ok', defs: childDefs })
+    })
+
+    it('fetches many component schemas and their parent sets in two batched requests', async () => {
+      const childDefs = { 'Has Icon': { type: 'BOOLEAN', defaultValue: false } }
+      const directDefs = { Label: { type: 'TEXT', defaultValue: 'Hello' } }
+      const setDefs = {
+        Size: { type: 'VARIANT', variantOptions: ['Small', 'Large'], defaultValue: 'Small' },
+      }
+      request.get
+        .mockResolvedValueOnce({
+          response: { status: 200 },
+          data: {
+            nodes: {
+              '1:2': nodesData('1:2', childDefs, { componentSetId: '1:1' }).data.nodes['1:2'],
+              '2:3': nodesData('2:3', directDefs).data.nodes['2:3'],
+            },
+          },
+        })
+        .mockResolvedValueOnce(nodesData('1:1', setDefs))
+
+      const result = await fetchComponentPropertyDefinitionsBatch(
+        'https://api',
+        'file1',
+        ['1:2', '2:3'],
+        'tok',
+      )
+
+      expect(result).toEqual({
+        '1:2': { status: 'ok', defs: setDefs },
+        '2:3': { status: 'ok', defs: directDefs },
+      })
+      expect(request.get).toHaveBeenCalledTimes(2)
+      expect(request.get.mock.calls.map(([url]: [string]) => url)).toEqual([
+        'https://api/files/file1/nodes?ids=1:2,2:3',
+        'https://api/files/file1/nodes?ids=1:1',
+      ])
     })
   })
 

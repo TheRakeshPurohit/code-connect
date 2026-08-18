@@ -7,15 +7,7 @@ import { request } from './fetch'
 
 let updatedVersionAvailable: string | false | undefined = undefined
 let message: string | undefined = undefined
-let parserBasedCodeConnectFound = false
-let deprecationWarningHidden = false
 let skipUpdateCheck = false
-
-// Called when the native parser has actually produced Code Connect docs, which
-// is the only definitive signal that a project still uses the legacy parsers.
-export function flagParserBasedCodeConnect() {
-  parserBasedCodeConnectFound = true
-}
 
 // The type of the arguments passed to a command handler:
 // any arguments, then the command arguments, then the Command object
@@ -23,11 +15,10 @@ type CommandArgs<T extends BaseCommand> = [...any[], T, Command]
 
 // Wrap action handlers to check for updates or a message, and output a message
 // after the action if any are available
-export function withVersionWarnings<T extends BaseCommand>(
+export function withUpdateCheck<T extends BaseCommand>(
   // The second to last argument is always the command args, but I couldn't work
   // out how to model this with Typescript here
   fn: (...args: any[]) => void | Promise<void>,
-  { hideDeprecationWarning = false }: { hideDeprecationWarning?: boolean } = {},
 ) {
   return (...args: CommandArgs<T>) => {
     // Get the args passed at the command line (the second to last argument)
@@ -36,7 +27,6 @@ export function withVersionWarnings<T extends BaseCommand>(
     const restArgs = args.slice(0, -2)
 
     skipUpdateCheck = !!commandArgs.skipUpdateCheck
-    deprecationWarningHidden = hideDeprecationWarning
 
     if (skipUpdateCheck) {
       return fn(...restArgs, commandArgs)
@@ -103,15 +93,7 @@ function getUpdateCommand() {
   return 'npm update -g @figma/code-connect'
 }
 
-const DEPRECATION_NOTICE = `
-Framework-specific parsers will no longer receive updates or support from August 17th, 2026. Template files will be the only actively maintained way of using Code Connect. See our migration guide for more information and instructions on migrating parser-based Code Connect:
-https://developers.figma.com/docs/code-connect/templates-migration-guide/`
-
 function maybeShowUpdateMessage() {
-  if (parserBasedCodeConnectFound && !deprecationWarningHidden) {
-    logger.warn(DEPRECATION_NOTICE)
-  }
-
   if (updatedVersionAvailable) {
     logger.warn(`\nA new version of the Figma CLI is available. v${require('../../package.json').version} is currently installed, and the latest version available is v${updatedVersionAvailable}.
 

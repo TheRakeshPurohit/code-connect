@@ -25,7 +25,7 @@ import { fromError } from 'zod-validation-error'
 import { ParseRequestPayload, ParseResponsePayload } from '../connect/parser_executable_types'
 import z from 'zod'
 import path from 'path'
-import { flagParserBasedCodeConnect, withVersionWarnings } from '../common/updates'
+import { withUpdateCheck } from '../common/updates'
 import { applyDocumentUrlSubstitutions, exitWithFeedbackMessage } from '../connect/helpers'
 import { filterProjectInfoByFile } from './filter_project_info'
 import { parseHtmlDoc } from '../html/parser'
@@ -79,7 +79,7 @@ export type BaseCommand = commander.Command & {
 type BatchMigrationMode = 'auto' | 'all' | 'none'
 
 function addBaseCommand(command: commander.Command, name: string, description: string) {
-  return command
+  const configuredCommand = command
     .command(name)
     .description(description)
     .usage('[options]')
@@ -104,12 +104,15 @@ function addBaseCommand(command: commander.Command, name: string, description: s
       'before',
       'For feedback or bugs, please raise an issue: https://github.com/figma/code-connect/issues',
     )
+
+
+  return configuredCommand
 }
 
 export function addConnectCommandToProgram(program: commander.Command) {
   // Main command, invoked with `figma connect`
   const connectCommand = addBaseCommand(program, 'connect', 'Figma Code Connect').action(
-    withVersionWarnings(runWizard, { hideDeprecationWarning: true }),
+    withUpdateCheck(runWizard),
   )
 
   // Make shared base flags work on either side of the subcommand name —
@@ -140,7 +143,7 @@ export function addConnectCommandToProgram(program: commander.Command) {
       '--force',
       'overwrite existing UI-created Code Connect mappings if they conflict with the files being published',
     )
-    .action(withVersionWarnings(handlePublish))
+    .action(withUpdateCheck(handlePublish))
 
   addBaseCommand(
     connectCommand,
@@ -155,7 +158,7 @@ export function addConnectCommandToProgram(program: commander.Command) {
       'specify the node to unpublish. This will unpublish for the specified label.',
     )
     .option('-l --label <label>', 'label to unpublish for')
-    .action(withVersionWarnings(handleUnpublish))
+    .action(withUpdateCheck(handleUnpublish))
 
   addBaseCommand(
     connectCommand,
@@ -167,7 +170,7 @@ export function addConnectCommandToProgram(program: commander.Command) {
       '--include-template-files',
       '(Deprecated) No longer needed - template files are included by default. Will be removed in a future version.',
     )
-    .action(withVersionWarnings(handleParse))
+    .action(withUpdateCheck(handleParse))
 
   addBaseCommand(
     connectCommand,
@@ -175,7 +178,7 @@ export function addConnectCommandToProgram(program: commander.Command) {
     'Generate a Code Connect file with boilerplate in the current directory for a Figma node URL',
   )
     .argument('<figma-node-url>', 'Figma node URL to create the Code Connect file from')
-    .action(withVersionWarnings(handleCreate))
+    .action(withUpdateCheck(handleCreate))
 
   addBaseCommand(
     connectCommand,
@@ -199,7 +202,7 @@ export function addConnectCommandToProgram(program: commander.Command) {
         .choices(['auto', 'all', 'none'])
         .default('auto'),
     )
-    .action(withVersionWarnings(handleMigrate, { hideDeprecationWarning: true }))
+    .action(withUpdateCheck(handleMigrate))
 
   addBaseCommand(
     connectCommand,
@@ -236,7 +239,7 @@ export function addConnectCommandToProgram(program: commander.Command) {
         'Implies --all, but folds property combinations that render identical output into a single result (reported with the count of combinations it covers). Useful when boolean/variant axes do not change the rendered snippet.',
       ).implies({ all: true }),
     )
-    .action(withVersionWarnings(handlePreview))
+    .action(withUpdateCheck(handlePreview))
 }
 
 export function getAccessToken(cmd: BaseCommand) {
@@ -297,12 +300,22 @@ function transformDocFromParser(
   }
 }
 
+type GetCodeConnectObjectsOptions = {
+  silent?: boolean
+  parserMode?: 'forbid' | 'migration' | 'exempt'
+}
+
 export async function getCodeConnectObjects(
   cmd: BaseCommand & { label?: string },
   projectInfo: ProjectInfo,
-  silent = false,
-  isForMigration = false,
+  { silent = false, parserMode = 'forbid' }: GetCodeConnectObjectsOptions = {},
 ): Promise<CodeConnectJSON[]> {
+  const isForMigration = parserMode === 'migration'
+  let isParserExempt = parserMode === 'exempt'
+  // Keep legacy parser coverage under Jest. Parser-removal tests explicitly disable this
+  // opt-in so they continue to exercise the public CLI behavior.
+  const isParserExemptForTests =
+    process.env.NODE_ENV === 'test' && process.env.CODE_CONNECT_TEST_ALLOW_PARSERS === '1'
   if (cmd.jsonFile) {
     try {
       const docsFromJson = JSON.parse(fs.readFileSync(cmd.jsonFile, 'utf8'))
@@ -345,12 +358,31 @@ export async function getCodeConnectObjects(
   // (.swift/.kt/.tsx etc.), which are disjoint from raw templates, so skipping it
   // here drops no docs.
   //
-  // An empty file set is deliberately NOT treated as template-only: we leave the
-  // existing behavior intact (the configured parser still runs), so e.g. a Swift
-  // config that matches no files surfaces the same parser output as before.
-  const rawTemplateFileSet = new Set(rawTemplateFiles)
+  // An empty file set is deliberately NOT treated as template-only. Migration
+  // and exempt callers still invoke the configured parser, while other commands reject
+  // the parser configuration consistently even when its globs currently match no files.
+  const batchFiles = projectInfo.files.filter((f: string) => f.endsWith('.figma.batch.json'))
+  const parserlessFileSet = new Set([...rawTemplateFiles, ...batchFiles])
   const isTemplateOnlyProject =
-    rawTemplateFiles.length > 0 && projectInfo.files.every((f) => rawTemplateFileSet.has(f))
+    parserlessFileSet.size > 0 && projectInfo.files.every((f) => parserlessFileSet.has(f))
+
+  if (
+    !isParserExempt &&
+    parserMode === 'forbid' &&
+    !isParserExemptForTests &&
+    !isTemplateOnlyProject &&
+    projectInfo.config.parser
+  ) {
+    exitWithError(`Framework-specific parsers are no longer supported in Code Connect CLI v2.
+
+Run \`figma connect migrate\` to convert parser-based Code Connect to template files:
+https://developers.figma.com/docs/code-connect/templates-migration-guide/
+
+Alternatively, if you're not able to migrate right now, continue using Code Connect v1:
+npm install --save-dev @figma/code-connect@1
+
+If this project has already been migrated, remove the \`parser\` setting from figma.config.json or update its \`include\` patterns to match only template files.`)
+  }
 
   if (isTemplateOnlyProject) {
     // Verbose-only: this is a diagnostic detail and must not alter normal output.
@@ -420,13 +452,6 @@ export async function getCodeConnectObjects(
     }
   }
 
-  // At this point `codeConnectObjects` holds only docs produced by a native
-  // parser (raw templates and batch files are appended below), so a non-empty
-  // list is proof the project still relies on the deprecated parsers.
-  if (codeConnectObjects.length > 0) {
-    flagParserBasedCodeConnect()
-  }
-
   if (rawTemplateFiles.length > 0) {
     // Resolve the label before parsing so language inference works correctly
     const resolvedLabel = cmd.label || projectInfo.config.label
@@ -471,8 +496,6 @@ export async function getCodeConnectObjects(
   }
 
   // Process batch files (.figma.batch.json)
-  const batchFiles = projectInfo.files.filter((f: string) => f.endsWith('.figma.batch.json'))
-
   if (batchFiles.length > 0) {
     const resolvedLabel = cmd.label || projectInfo.config.label
 
@@ -726,7 +749,9 @@ async function handleUnpublish(cmd: BaseCommand & { node: string; label: string 
     }
     nodesToDeleteRelevantInfo = [{ figmaNode: cmd.node, label: cmd.label }]
   } else {
-    const codeConnectObjects = await getCodeConnectObjects(cmd, projectInfo)
+    const codeConnectObjects = await getCodeConnectObjects(cmd, projectInfo, {
+      parserMode: 'exempt',
+    })
 
     nodesToDeleteRelevantInfo = codeConnectObjects.map((doc) => ({
       figmaNode: doc.figmaNode,
@@ -830,7 +855,9 @@ async function handleMigrate(cmd: BaseCommand & { javascript?: boolean }) {
   }
 
   // Parse the files to get Code Connect objects
-  const allCodeConnectObjects = await getCodeConnectObjects(cmd, projectInfo, false, true)
+  const allCodeConnectObjects = await getCodeConnectObjects(cmd, projectInfo, {
+    parserMode: 'migration',
+  })
 
   const allCodeConnectObjectsByFigmaUrl = groupCodeConnectObjectsByFigmaUrl(allCodeConnectObjects)
   const groupCount = Object.keys(allCodeConnectObjectsByFigmaUrl).length

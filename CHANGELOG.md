@@ -1,3 +1,19 @@
+# Code Connect v2.0.0 (18 August 2026)
+
+> [!WARNING]
+> Framework-specific parsers will no longer receive updates or support. Template files are now the only actively maintained way of using Code Connect. See our migration guide for more information and instructions on migrating parser-based Code Connect:
+> https://developers.figma.com/docs/code-connect/templates-migration-guide/
+
+## Breaking changes
+
+- Framework-specific parsers can now only be used by `figma connect migrate` and `figma connect unpublish`. Other commands exit with guidance to migrate parser-based Code Connect to template files. If you wish to continue using framework-specific parsers, install Code Connect v1 with `npm install --save-dev @figma/code-connect@1`.
+
+## Fixed
+
+### General
+
+- Performance optimizations for `figma connect preview`
+
 # Code Connect v1.5.3 (12 August 2026)
 
 ## Fixed

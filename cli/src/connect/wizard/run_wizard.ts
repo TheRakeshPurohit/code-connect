@@ -767,7 +767,10 @@ export async function getUnconnectedComponentsAndConnectedComponentMappings(
   const dir = getDir(cmd)
   const fileKey = parseFileKey(figmaFileUrl)
 
-  const codeConnectObjects = await getCodeConnectObjects(cmd, projectInfo, true)
+  const codeConnectObjects = await getCodeConnectObjects(cmd, projectInfo, {
+    silent: true,
+    parserMode: 'exempt',
+  })
 
   const connectedNodeIdsInFileToCodeConnectObjectMap = codeConnectObjects.reduce(
     (map, codeConnectJson) => {
@@ -1159,6 +1162,8 @@ export async function runWizard(cmd: BaseCommand) {
   })
 
   if (success) {
-    logger.info(`\nUse the 'publish' command to make mappings visible in Figma Dev Mode.`)
+    logger.info(
+      `\nRun \`figma connect migrate\` to convert the generated files to templates, then run \`figma connect publish\` to make mappings visible in Figma Dev Mode.`,
+    )
   }
 }

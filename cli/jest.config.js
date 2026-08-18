@@ -1,4 +1,6 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
+process.env.CODE_CONNECT_TEST_ALLOW_PARSERS = '1'
+
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',

@@ -2,41 +2,64 @@ import { promisify } from 'util'
 import { exec } from 'child_process'
 import path from 'path'
 
-const DEPRECATION_NOTICE_FRAGMENT =
-  'Framework-specific parsers will no longer receive updates or support from August 17th, 2026'
+const PARSER_REMOVAL_NOTICE_FRAGMENT =
+  'Framework-specific parsers are no longer supported in Code Connect CLI v2'
 
 function runParse(fixture: string) {
   return promisify(exec)(
-    `npx tsx ../../../cli connect parse --dir ${path.join(__dirname, 'e2e_parse_command', fixture)}`,
+    `npx cross-env CODE_CONNECT_TEST_ALLOW_PARSERS=0 npx tsx ../../../cli connect parse --skip-update-check --dir ${path.join(
+      __dirname,
+      'e2e_parse_command',
+      fixture,
+    )}`,
     { cwd: __dirname },
   )
 }
 
-describe('e2e test for parser deprecation warning', () => {
-  it('shows deprecation notice when the native parser produces Code Connect', async () => {
-    const result = await runParse('react_storybook')
+function runUnpublish(fixture: string) {
+  return promisify(exec)(
+    `npx cross-env CODE_CONNECT_TEST_ALLOW_PARSERS=0 npx tsx ../../../cli connect unpublish --dry-run --skip-update-check --dir ${path.join(
+      __dirname,
+      'e2e_parse_command',
+      fixture,
+    )}`,
+    { cwd: __dirname },
+  )
+}
 
-    expect(result.stderr).toContain(DEPRECATION_NOTICE_FRAGMENT)
+describe('e2e test for parser removal', () => {
+  it('rejects parser-based Code Connect before parsing', async () => {
+    await expect(runParse('react_storybook')).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringMatching(
+        /Framework-specific parsers are no longer supported[\s\S]*npm install --save-dev @figma\/code-connect@1/,
+      ),
+    })
   })
 
-  it('skips deprecation notice when project only contains parserless template files', async () => {
+  it('allows projects containing only parserless template files', async () => {
     const result = await runParse('raw')
 
-    expect(result.stderr).not.toContain(DEPRECATION_NOTICE_FRAGMENT)
+    expect(result.stderr).not.toContain(PARSER_REMOVAL_NOTICE_FRAGMENT)
   })
 
-  // A migrated project keeps its `parser` config and ordinary source files, so
-  // the include globs still match non-template files. Those are not Code
-  // Connect, so they must not trigger the notice.
-  it('skips deprecation notice for a migrated project whose globs match ordinary source files', async () => {
-    const result = await runParse('migrated_html')
-
-    expect(result.stderr).not.toContain(DEPRECATION_NOTICE_FRAGMENT)
+  it('rejects migrated projects whose parser configuration still matches source files', async () => {
+    await expect(runParse('migrated_html')).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('remove the `parser` setting'),
+    })
   })
 
-  it('shows deprecation notice for a partially migrated project', async () => {
-    const result = await runParse('partially_migrated_html')
+  it('rejects partially migrated projects', async () => {
+    await expect(runParse('partially_migrated_html')).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining(PARSER_REMOVAL_NOTICE_FRAGMENT),
+    })
+  })
 
-    expect(result.stderr).toContain(DEPRECATION_NOTICE_FRAGMENT)
+  it('allows parser-based Code Connect to be unpublished', async () => {
+    const result = await runUnpublish('react_storybook')
+
+    expect(result.stderr).not.toContain(PARSER_REMOVAL_NOTICE_FRAGMENT)
   })
 })
